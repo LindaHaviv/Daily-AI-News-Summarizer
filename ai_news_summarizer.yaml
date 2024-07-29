@@ -6,6 +6,10 @@ Parameters:
     Type: String
     Default: ai-news-summarizer-bucket
     Description: The name of an existing S3 bucket to use for the Lambda function code.
+  SummarizerLambdaFunctionName:
+    Type: String
+    Default: ai-news-summarizer-function
+    Description: The name of the summarizer Lambda function.
 
 Resources:
   LambdaExecutionRole:
@@ -53,11 +57,16 @@ Resources:
                 Action:
                   - "bedrock:InvokeModel"
                 Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "lambda:UpdateFunctionCode"
+                Resource:
+                  - !GetAtt SummarizerLambdaFunction.Arn
 
-  LambdaFunction:
+  SummarizerLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: ai-news-summarizer-function
+      FunctionName: !Ref SummarizerLambdaFunctionName
       Handler: ai_news_summarizer.main
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
@@ -69,26 +78,63 @@ Resources:
         Variables:
           PARAMETER_STORE_PATH: "/"
 
+  CodeUpdaterLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: update-lambda-code-function
+      Handler: update_lambda_code.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: update_lambda_code.zip
+      Runtime: python3.8
+      Timeout: 300  # Adjust based on your needs
+      Environment:
+        Variables:
+          LAMBDA_FUNCTION_NAME: !Ref SummarizerLambdaFunctionName
+
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref ExistingBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .zip
+            Function: !GetAtt CodeUpdaterLambdaFunction.Arn
+
   CloudWatchEventRule:
     Type: AWS::Events::Rule
     Properties:
       ScheduleExpression: 'cron(0 10 * * ? *)'  # Run at 10 AM UTC daily
       Targets:
-        - Arn: !GetAtt LambdaFunction.Arn
+        - Arn: !GetAtt SummarizerLambdaFunction.Arn
           Id: LambdaTarget
 
-  LambdaInvokePermission:
+  LambdaInvokePermissionSummarizer:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt LambdaFunction.Arn
+      FunctionName: !GetAtt SummarizerLambdaFunction.Arn
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt CloudWatchEventRule.Arn
 
+  LambdaInvokePermissionUpdater:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CodeUpdaterLambdaFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${ExistingBucketName}"
+
 Outputs:
-  LambdaFunctionArn:
-    Description: ARN of the created Lambda function
-    Value: !GetAtt LambdaFunction.Arn
+  SummarizerLambdaFunctionArn:
+    Description: ARN of the created summarizer Lambda function
+    Value: !GetAtt SummarizerLambdaFunction.Arn
   S3BucketName:
     Description: Name of the S3 bucket created
     Value: !Ref ExistingBucketName

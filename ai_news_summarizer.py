@@ -6,7 +6,7 @@ import requests
 import json
 
 # Initialize AWS clients
-bedrock_client = boto3.client('bedrock-runtime')
+bedrock_runtime_client = boto3.client('bedrock-runtime')
 ses_client = boto3.client('ses')
 ssm_client = boto3.client('ssm')
 
@@ -15,10 +15,9 @@ def get_parameter(name):
     response = ssm_client.get_parameter(Name=name, WithDecryption=True)
     return response['Parameter']['Value']
 
-# Retrieve parameters
-BEDROCK_MODEL_ID = get_parameter('/BEDROCK_MODEL_ID')
-SENDER_EMAIL = get_parameter('/SENDER_EMAIL')
-RECIPIENT_EMAIL = get_parameter('/RECIPIENT_EMAIL')
+BEDROCK_MODEL_ID = get_parameter('BEDROCK_MODEL_ID')
+SENDER_EMAIL = get_parameter('SENDER_EMAIL')
+RECIPIENT_EMAIL = get_parameter('RECIPIENT_EMAIL')
 
 # RSS feeds of AI news sources
 rss_feeds = [
@@ -41,26 +40,25 @@ def extract_article_content(link):
 
 # Function to summarize articles using Amazon Bedrock
 def summarize_article(content):
-    request_body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1000,
-        "messages": [
-            {
-                "role": "user",
-                "content": content
-            }
-        ]
-    })
-
-    response = bedrock_client.invoke_model(
+    prompt = f"Please summarize the following article in 3 sentences:\n\n{content}"
+    response = bedrock_runtime_client.invoke_model(
         modelId=BEDROCK_MODEL_ID,
-        body=request_body,
         contentType='application/json',
-        accept='application/json'
+        accept='application/json',
+        body=json.dumps({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": 100,
+            "anthropic_version": "bedrock-2023-05-31"
+        })
     )
-    response_body = json.loads(response['body'].read())
-    print(f"DEBUG: Bedrock API response: {response_body}")  # Debug statement
-    summary = response_body['content'][0]['text'].strip()
+    response_body = json.loads(response['body'].read().decode('utf-8'))
+    print(f"DEBUG: Bedrock API response: {response_body}")  # Added logging for debugging
+    summary = response_body['messages'][0]['content'].strip()  # Adjusted to match the response structure
     return summary
 
 # Function to send summaries via Amazon SES
@@ -75,7 +73,7 @@ def send_email(subject, body):
                 'Data': subject
             },
             'Body': {
-                'Text': {
+                'Html': {
                     'Data': body
                 }
             }
@@ -83,21 +81,41 @@ def send_email(subject, body):
     )
     return response
 
+# Function to summarize and select top articles
+def summarize_and_select_top_articles(articles):
+    summaries = []
+    for article in articles:
+        summary = summarize_article(article['content'])
+        summaries.append({
+            'title': article['title'],
+            'summary': summary,
+            'link': article['link']
+        })
+    return summaries
+
 # Main function to process RSS feeds and send summaries
 def main(event=None, context=None):
-    summaries = []
+    combined_summaries = []
 
     for feed_url in rss_feeds:
         feed = fetch_rss_feed(feed_url)
-        for entry in feed.entries[:5]:  # Limiting to the top 5 entries per feed
-            article_content = extract_article_content(entry.link)
-            summary = summarize_article(article_content)
-            summaries.append(f"{entry.title}: {summary}")
+        articles = [{
+            'title': entry.title,
+            'link': entry.link,
+            'content': extract_article_content(entry.link)
+        } for entry in feed.entries[:10]]
+        
+        # Log the feed object to inspect its structure
+        print(f"DEBUG: Feed object for {feed_url}: {feed.feed}")
 
-    combined_summary = "\n\n".join(summaries)
+        top_summaries = summarize_and_select_top_articles(articles)
+        feed_title = feed.feed.get('title', 'Unknown Source')  # Handle missing title gracefully
+        combined_summaries.append(f"<h2>Top Articles from {feed_title}</h2>")
+        for summary in top_summaries[:3]:
+            combined_summaries.append(f"<h3>{summary['title']}</h3><p>{summary['summary']}</p><p><a href='{summary['link']}'>Read more</a></p>")
 
-    # Send email with the combined summary
-    send_email('Daily AI News Summary', combined_summary)
+    email_body = "<html><body>" + "".join(combined_summaries) + "</body></html>"
+    send_email('Daily AI News Summary', email_body)
 
 if __name__ == '__main__':
     main()
