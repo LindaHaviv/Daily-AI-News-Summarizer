@@ -50,7 +50,7 @@ def extract_article_content(link):
 
 # Function to summarize articles using Amazon Bedrock
 def summarize_article(title, content, source, pub_date):
-    prompt = f"Article Title: {title}\nSource: {source}\nPublication Date: {pub_date}\n\nArticle Content:\n{content}\n\nPlease provide a concise summary of the key points and main ideas of this article in approximately 150 words."
+    prompt = f"Article Title: {title}\nSource: {source}\nPublication Date: {pub_date}\n\nArticle Content:\n{content}\n\nPlease provide a concise summary of the key points and main ideas of this article in approximately 100 words."
     response = bedrock_runtime_client.invoke_model(
         modelId=BEDROCK_MODEL_ID,
         contentType='application/json',
@@ -69,12 +69,98 @@ def summarize_article(title, content, source, pub_date):
     response_body = json.loads(response['body'].read().decode('utf-8'))
     print(f"DEBUG: Bedrock API response: {response_body}")
 
-    if 'content' in response_body and len(response_body['content']) > 0:
-        summary = response_body['content'][0]['text'].strip()  # Adjusted to match the response structure
+    if 'content' in response_body and isinstance(response_body['content'], list):
+        summary_text = ''.join([chunk.get('text', '') for chunk in response_body['content'] if isinstance(chunk, dict)])
+        if summary_text.startswith('Here is a concise summary:'):
+            summary = summary_text[27:].strip()  # Remove the introductory text
+        else:
+            summary = summary_text
     else:
         summary = "Summary not available."
 
     return summary
+
+    prompt = f"Article Title: {title}\nSource: {source}\nPublication Date: {pub_date}\n\nArticle Content:\n{content}\n\nPlease provide a concise summary of the key points and main ideas of this article in approximately 100 words."
+    response = bedrock_runtime_client.invoke_model(
+        modelId=BEDROCK_MODEL_ID,
+        contentType='application/json',
+        accept='application/json',
+        body=json.dumps({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": 300,
+            "anthropic_version": "bedrock-2023-05-31"
+        })
+    )
+    response_body = json.loads(response['body'].read().decode('utf-8'))
+    print(f"DEBUG: Bedrock API response: {response_body}")
+
+    if 'content' in response_body and response_body['content']:
+        summary_text = ''.join(response_body['content'])
+        if summary_text.startswith('Here is a concise summary:'):
+            summary = summary_text[27:].strip()  # Remove the introductory text
+        else:
+            summary = summary_text
+    else:
+        summary = "Summary not available."
+
+    return summary
+
+# Function to check if an article is AI-related
+def is_ai_related(title, content):
+    prompt = f"Article Title: {title}\n\nArticle Content:\n{content}\n\nIs this article related to artificial intelligence (AI)? Please respond with 'Yes' or 'No'."
+    response = bedrock_runtime_client.invoke_model(
+        modelId=BEDROCK_MODEL_ID,
+        contentType='application/json',
+        accept='application/json',
+        body=json.dumps({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": 10,
+            "anthropic_version": "bedrock-2023-05-31"
+        })
+    )
+    response_body = json.loads(response['body'].read().decode('utf-8'))
+    print(f"DEBUG: Bedrock API response: {response_body}")
+
+    if 'content' in response_body and isinstance(response_body['content'], list):
+        ai_related_text = ''.join([chunk.get('text', '') for chunk in response_body['content'] if isinstance(chunk, dict)])
+        return ai_related_text.strip().lower() == 'yes'
+    else:
+        return False
+
+    prompt = f"Article Title: {title}\n\nArticle Content:\n{content}\n\nIs this article related to artificial intelligence (AI)? Please respond with 'Yes' or 'No'."
+    response = bedrock_runtime_client.invoke_model(
+        modelId=BEDROCK_MODEL_ID,
+        contentType='application/json',
+        accept='application/json',
+        body=json.dumps({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": 10,
+            "anthropic_version": "bedrock-2023-05-31"
+        })
+    )
+    response_body = json.loads(response['body'].read().decode('utf-8'))
+    print(f"DEBUG: Bedrock API response: {response_body}")
+
+    if 'content' in response_body and response_body['content']:
+        ai_related_text = ''.join(response_body['content']).strip().lower()
+        return ai_related_text == 'yes'
+    else:
+        return False
 
 # Function to send summaries via Amazon SES
 def send_email(subject, body):
@@ -101,11 +187,12 @@ def summarize_and_select_top_articles(articles):
     summaries = []
     for article in articles:
         summary = summarize_article(article['title'], article['content'], article['source'], article['pub_date'])
-        summaries.append({
-            'title': article['title'],
-            'summary': summary,
-            'link': article['link']
-        })
+        if is_ai_related(article['title'], article['content']) and summary != "Summary not available.":
+            summaries.append({
+                'title': article['title'],
+                'summary': summary,
+                'link': article['link']
+            })
     return summaries
 
 # Main function to process RSS feeds and send summaries
