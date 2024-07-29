@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AI News Summarizer Infrastructure
+
+Parameters:
+  ExistingBucketName:
+    Type: String
+    Default: ai-news-summarizer-bucket
+    Description: The name of an existing S3 bucket to use for the Lambda function code.
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "lambda-execution-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${ExistingBucketName}/*"
+              - Effect: "Allow"
+                Action:
+                  - "ses:SendEmail"
+                  - "ses:SendRawEmail"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "ssm:GetParameter"
+                Resource:
+                  - "arn:aws:ssm:*:*:parameter/RECIPIENT_EMAIL"
+                  - "arn:aws:ssm:*:*:parameter/SENDER_EMAIL"
+                  - "arn:aws:ssm:*:*:parameter/BEDROCK_MODEL_ID"
+              - Effect: "Allow"
+                Action:
+                  - "bedrock:InvokeModel"
+                Resource: "*"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ai-news-summarizer-function
+      Handler: ai_news_summarizer.main
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: ai_news_summarizer.zip
+      Runtime: python3.8
+      Timeout: 900  # Adjust based on your needs
+      Environment:
+        Variables:
+          PARAMETER_STORE_PATH: "/"
+
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: 'cron(0 10 * * ? *)'  # Run at 10 AM UTC daily
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: LambdaTarget
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudWatchEventRule.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the created Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+  S3BucketName:
+    Description: Name of the S3 bucket created
+    Value: !Ref ExistingBucketName

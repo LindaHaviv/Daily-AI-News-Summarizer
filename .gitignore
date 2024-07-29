@@ -1,0 +1,8 @@
+# Ignore macOS-specific file
+.DS_Store
+
+# Ignore virtual environment directory
+myenv/
+
+# Ignore zip files
+*.zip
